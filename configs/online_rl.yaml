@@ -3,7 +3,7 @@
 ##################################################################################
 
 project_name: 'SimbaV2'
-entity_name: 'luc-mccutcheon'
+entity_name: null
 group_name: 'test'
 exp_name: 'test'
 seed: 0

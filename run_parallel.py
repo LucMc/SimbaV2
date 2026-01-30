@@ -60,44 +60,49 @@ if __name__ == "__main__":
     exp_name = args.pop("exp_name")
     agent_config = args.pop("agent_config")
 
-    # import library after CUDA_VISIBLE_DEVICES operation
-    from scale_rl.envs.d4rl import D4RL_MUJOCO
-    from scale_rl.envs.dmc import DMC_EASY_MEDIUM, DMC_HARD
-    from scale_rl.envs.humanoid_bench import HB_LOCOMOTION_NOHAND
-    from scale_rl.envs.mujoco import MUJOCO_ALL
-    from scale_rl.envs.myosuite import MYOSUITE_TASKS
-
     env_type = args.pop("env_type")
 
+    # Import environment lists lazily to avoid d4rl/mujoco_py dependency issues
     ###################
     # offline
     if env_type == "d4rl_mujoco":
+        from scale_rl.envs.d4rl import D4RL_MUJOCO
         envs = D4RL_MUJOCO
         env_configs = ["d4rl"] * len(envs)
 
     ###################
     # online
     elif env_type == "mujoco":
+        from scale_rl.envs.mujoco import MUJOCO_ALL
         envs = MUJOCO_ALL
         env_configs = [env_type] * len(envs)
 
     elif env_type == "dmc_em":
+        from scale_rl.envs.dmc import DMC_EASY_MEDIUM
         envs = DMC_EASY_MEDIUM
         env_configs = ["dmc"] * len(envs)
 
     elif env_type == "dmc_hard":
+        from scale_rl.envs.dmc import DMC_HARD
         envs = DMC_HARD
         env_configs = ["dmc"] * len(envs)
 
     elif env_type == "myosuite":
+        from scale_rl.envs.myosuite import MYOSUITE_TASKS
         envs = MYOSUITE_TASKS
         env_configs = [env_type] * len(envs)
 
     elif env_type == "hb_locomotion":
+        from scale_rl.envs.humanoid_bench import HB_LOCOMOTION_NOHAND
         envs = HB_LOCOMOTION_NOHAND
         env_configs = [env_type] * len(envs)
 
     elif env_type == "all":
+        from scale_rl.envs.d4rl import D4RL_MUJOCO
+        from scale_rl.envs.dmc import DMC_EASY_MEDIUM, DMC_HARD
+        from scale_rl.envs.humanoid_bench import HB_LOCOMOTION_NOHAND
+        from scale_rl.envs.mujoco import MUJOCO_ALL
+        from scale_rl.envs.myosuite import MYOSUITE_TASKS
         envs = (
             MUJOCO_ALL
             + DMC_EASY_MEDIUM

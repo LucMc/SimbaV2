@@ -7,8 +7,16 @@ from scale_rl.envs.dmc import make_dmc_env
 from scale_rl.envs.mujoco import make_mujoco_env
 from scale_rl.envs.humanoid_bench import make_humanoid_env
 from scale_rl.envs.myosuite import make_myosuite_env
-from scale_rl.envs.d4rl import make_d4rl_env, make_d4rl_dataset, get_d4rl_normalized_score
 from scale_rl.envs.wrappers import RepeatAction
+
+# Lazy imports for d4rl to avoid MuJoCo dependency when not needed
+_d4rl_module = None
+
+def _get_d4rl_module():
+    global _d4rl_module
+    if _d4rl_module is None:
+        from scale_rl.envs import d4rl as _d4rl_module
+    return _d4rl_module
 
 
 def create_envs(
@@ -74,7 +82,7 @@ def create_vec_env(
         elif env_type == 'myosuite':
             env = make_myosuite_env(env_name, seed, **kwargs)
         elif env_type == "d4rl":
-            env = make_d4rl_env(env_name, seed, **kwargs)
+            env = _get_d4rl_module().make_d4rl_env(env_name, seed, **kwargs)
         else:
             raise NotImplementedError
 
@@ -115,15 +123,15 @@ def create_vec_env(
 
 def create_dataset(env_type: str, env_name: str) -> list[dict[str, Any]]:
     if env_type == 'd4rl':
-        dataset = make_d4rl_dataset(env_name)
+        dataset = _get_d4rl_module().make_d4rl_dataset(env_name)
     else:
         raise NotImplementedError
     return dataset
 
 
-def get_normalized_score(env_type: str, env_name: str, unnormalized_score: float) -> float: 
+def get_normalized_score(env_type: str, env_name: str, unnormalized_score: float) -> float:
     if env_type == "d4rl":
-        score = get_d4rl_normalized_score(env_name, unnormalized_score)
+        score = _get_d4rl_module().get_d4rl_normalized_score(env_name, unnormalized_score)
     else:
         raise NotImplementedError
     return score

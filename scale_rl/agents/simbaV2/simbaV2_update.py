@@ -31,7 +31,7 @@ def l2normalize_layer(tree):
         axis = 1
     else:
         raise ValueError
-    return jax.tree.map(f=lambda x: l2normalize(x, axis=axis), tree=tree)
+    return jax.tree_util.tree_map(lambda x: l2normalize(x, axis=axis), tree)
 
 
 def l2normalize_network(
@@ -246,7 +246,7 @@ def update_target_network(
     target_network: Network,
     target_tau: bool,
 ) -> Tuple[Network, Dict[str, float]]:
-    new_target_params = jax.tree_map(
+    new_target_params = jax.tree.map(
         lambda p, tp: p * target_tau + tp * (1 - target_tau),
         network.params,
         target_network.params,

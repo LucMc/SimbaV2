@@ -15,3 +15,11 @@ if __name__ == "__main__":
         python_requires=">=3.9.0",
         zip_safe=True,
     )
+uv pip install jax==0.4.23 "jaxlib==0.4.23+cuda12.cudnn89" -f  https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+# Set uv cache to use tmpfs
+
+# Or just use pip directly (slower but works)
+export UV_CACHE_DIR=/tmp/uv_cache
+pip install jax==0.4.23 "jaxlib==0.4.23+cuda12.cudnn89" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html --cache-dir /tmp/pip_cache
+
+
