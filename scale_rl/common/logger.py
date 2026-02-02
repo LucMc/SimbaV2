@@ -14,6 +14,7 @@ class WandbTrainerLogger(object):
             project=cfg.project_name,
             entity=cfg.entity_name,
             group=cfg.group_name,
+            name=cfg.get('exp_name', None),
             config=dict_cfg,
         )
 

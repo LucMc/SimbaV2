@@ -28,6 +28,14 @@ def create_agent(
         from scale_rl.agents.simbaV2.simbaV2_agent import SimbaV2Agent
         agent = SimbaV2Agent(observation_space, action_space, cfg)
 
+    elif agent_type == 'simbaV2_swd':
+        from scale_rl.agents.simbaV2.simbaV2_agent_swd import SimbaV2AgentSWD
+        agent = SimbaV2AgentSWD(observation_space, action_space, cfg)
+
+    elif agent_type == 'simbaV2_gsd':
+        from scale_rl.agents.simbaV2.simbaV2_agent_gsd import SimbaV2AgentGSD
+        agent = SimbaV2AgentGSD(observation_space, action_space, cfg)
+
     else:
         raise NotImplementedError
 

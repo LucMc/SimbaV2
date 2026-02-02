@@ -4,7 +4,7 @@
 
 env_type: 'humanoid_bench'
 env_name: 'h1-walk-v0'
-num_env_steps: 1_000_000
+num_env_steps: 2_000_000
 episodic: true
 
 seed: ${seed}
