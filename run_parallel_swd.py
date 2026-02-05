@@ -7,12 +7,12 @@ This script runs experiments in parallel to compare the performance of:
 3. GSD optimizer with Gradient Scaled Decay (per-parameter statistics)
 
 Usage:
-    python run_paralel_swd.py --config_name online_rl --overrides env=hb_locomotion
-    python run_paralel_swd.py --config_name online_rl --overrides env=dmc --seeds 0 1 2
-    python run_paralel_swd.py --optimizer gsd --seeds 0 1 2  # GSD only
-    python run_paralel_swd.py --optimizer adam adams gsd --seeds 0 1 2  # All optimizers
+    python run_parallel_swd.py --env_type hb_locomotion --num_seeds 3
+    python run_parallel_swd.py --env_type dmc_hard --optimizer adam gsd --num_seeds 3
+    python run_parallel_swd.py --env_type hb_locomotion --device_ids 0 1 --num_seeds 3
 
-The script will launch parallel processes for each optimizer variant and seed combination.
+Loop order: environment (outer) -> seed (middle) -> optimizer (inner)
+This ensures all optimizers are compared under identical conditions before moving to the next seed.
 """
 
 import argparse
@@ -31,6 +31,9 @@ import omegaconf
 import tqdm
 from dotmap import DotMap
 
+# Set default GPU visibility before JAX import
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+
 from scale_rl.agents import create_agent
 from scale_rl.buffers import create_buffer
 from scale_rl.common import WandbTrainerLogger
@@ -41,6 +44,55 @@ from scale_rl.evaluation import evaluate, record_video
 OptimizerType = Literal['adam', 'adams', 'gsd']
 
 
+def get_environments(env_type: str) -> List[tuple]:
+    """
+    Get list of (env_name, env_config) tuples for a given env_type.
+
+    Returns:
+        List of (env_name, env_config) tuples.
+    """
+    if env_type == "hb_locomotion":
+        from scale_rl.envs.humanoid_bench import HB_LOCOMOTION_NOHAND
+        return [(env, "hb_locomotion") for env in HB_LOCOMOTION_NOHAND]
+
+    elif env_type == "dmc_hard":
+        from scale_rl.envs.dmc import DMC_HARD
+        return [(env, "dmc") for env in DMC_HARD]
+
+    elif env_type == "dmc_em":
+        from scale_rl.envs.dmc import DMC_EASY_MEDIUM
+        return [(env, "dmc") for env in DMC_EASY_MEDIUM]
+
+    elif env_type == "mujoco":
+        from scale_rl.envs.mujoco import MUJOCO_ALL
+        return [(env, "mujoco") for env in MUJOCO_ALL]
+
+    elif env_type == "myosuite":
+        from scale_rl.envs.myosuite import MYOSUITE_TASKS
+        return [(env, "myosuite") for env in MYOSUITE_TASKS]
+
+    elif env_type == "d4rl_mujoco":
+        from scale_rl.envs.d4rl import D4RL_MUJOCO
+        return [(env, "d4rl") for env in D4RL_MUJOCO]
+
+    elif env_type == "all":
+        from scale_rl.envs.dmc import DMC_EASY_MEDIUM, DMC_HARD
+        from scale_rl.envs.humanoid_bench import HB_LOCOMOTION_NOHAND
+        from scale_rl.envs.mujoco import MUJOCO_ALL
+        from scale_rl.envs.myosuite import MYOSUITE_TASKS
+        envs = []
+        envs += [(env, "mujoco") for env in MUJOCO_ALL]
+        envs += [(env, "dmc") for env in DMC_EASY_MEDIUM]
+        envs += [(env, "dmc") for env in DMC_HARD]
+        envs += [(env, "myosuite") for env in MYOSUITE_TASKS]
+        envs += [(env, "hb_locomotion") for env in HB_LOCOMOTION_NOHAND]
+        return envs
+
+    else:
+        raise ValueError(f"Unknown env_type: {env_type}. "
+                        f"Choose from: hb_locomotion, dmc_hard, dmc_em, mujoco, myosuite, d4rl_mujoco, all")
+
+
 @dataclass
 class ExperimentConfig:
     """Configuration for a single experiment run."""
@@ -49,6 +101,9 @@ class ExperimentConfig:
     overrides: List[str]
     optimizer: OptimizerType
     seed: int
+    env_name: str
+    env_config: str
+    device_id: int = 0
     weight_decay: float = 1e-4
     # GSD specific parameters
     decay_beta: float = 1.0
@@ -67,13 +122,19 @@ def run_experiment(exp_config: ExperimentConfig) -> Dict:
     Returns:
         Dictionary with experiment results and metadata.
     """
+    # Set GPU device for this process (must be done before JAX import)
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(exp_config.device_id)
+    os.environ["MUJOCO_EGL_DEVICE_ID"] = str(exp_config.device_id)
+
     args = DotMap({
         'config_path': exp_config.config_path,
         'config_name': exp_config.config_name,
         'overrides': exp_config.overrides.copy(),
     })
 
-    # Add seed to overrides
+    # Add environment and seed to overrides
+    args.overrides.append(f'env={exp_config.env_config}')
+    args.overrides.append(f'env.env_name={exp_config.env_name}')
     args.overrides.append(f'seed={exp_config.seed}')
 
     optimizer_name = exp_config.optimizer
@@ -163,6 +224,7 @@ def run_experiment(exp_config: ExperimentConfig) -> Dict:
     results = {
         'optimizer': optimizer_name,
         'seed': exp_config.seed,
+        'env_name': exp_config.env_name,
         'eval_rewards': [],
         'final_reward': 0.0,
     }
@@ -170,7 +232,7 @@ def run_experiment(exp_config: ExperimentConfig) -> Dict:
     for interaction_step in tqdm.tqdm(
         range(1, int(cfg.num_interaction_steps + 1)),
         smoothing=0.1,
-        desc=f"{optimizer_name} seed={exp_config.seed}"
+        desc=f"{exp_config.env_name} {optimizer_name} s{exp_config.seed}"
     ):
         # Collect data
         if timestep:
@@ -255,8 +317,11 @@ def run_parallel_experiments(
     config_path: str,
     config_name: str,
     overrides: List[str],
+    environments: List[tuple],
     seeds: List[int],
     optimizers: List[OptimizerType],
+    device_ids: List[int],
+    num_exp_per_device: int = 1,
     weight_decay: float = 1e-4,
     decay_beta: float = 1.0,
     min_grad_norm: float = 1e-8,
@@ -265,44 +330,65 @@ def run_parallel_experiments(
     max_workers: Optional[int] = None,
 ) -> List[Dict]:
     """
-    Run experiments in parallel for specified optimizers across multiple seeds.
+    Run experiments in parallel for specified optimizers across multiple seeds and environments.
+
+    Loop order: environment (outer) -> seed (middle) -> optimizer (inner)
 
     Args:
         config_path: Path to config directory.
         config_name: Name of the config file.
         overrides: List of hydra overrides.
+        environments: List of (env_name, env_config) tuples.
         seeds: List of random seeds to use.
         optimizers: List of optimizer types to run ('adam', 'adams', 'gsd').
+        device_ids: List of GPU device IDs to use.
+        num_exp_per_device: Number of experiments to run per device concurrently.
         weight_decay: Weight decay for AdamS/GSD experiments.
         decay_beta: GSD: EMA coefficient for gradient magnitude smoothing.
         min_grad_norm: GSD: Minimum gradient norm.
         min_decay: GSD: Minimum effective decay.
         max_decay: GSD: Maximum effective decay.
-        max_workers: Maximum number of parallel workers (default: CPU count).
+        max_workers: Maximum number of parallel workers (default: len(device_ids) * num_exp_per_device).
 
     Returns:
         List of result dictionaries from all experiments.
     """
     experiments = []
 
-    for seed in seeds:
-        for optimizer in optimizers:
-            experiments.append(ExperimentConfig(
-                config_path=config_path,
-                config_name=config_name,
-                overrides=overrides.copy(),
-                optimizer=optimizer,
-                seed=seed,
-                weight_decay=weight_decay,
-                decay_beta=decay_beta,
-                min_grad_norm=min_grad_norm,
-                min_decay=min_decay,
-                max_decay=max_decay,
-            ))
+    # Create all experiment configurations
+    # Loop order: environment (outer) -> seed (middle) -> optimizer (inner)
+    all_configs = []
+    for env_name, env_config in environments:
+        for seed in seeds:
+            for optimizer in optimizers:
+                all_configs.append((env_name, env_config, seed, optimizer))
+
+    # Distribute experiments across devices (round-robin)
+    for i, (env_name, env_config, seed, optimizer) in enumerate(all_configs):
+        device_id = device_ids[i % len(device_ids)]
+        experiments.append(ExperimentConfig(
+            config_path=config_path,
+            config_name=config_name,
+            overrides=overrides.copy(),
+            optimizer=optimizer,
+            seed=seed,
+            env_name=env_name,
+            env_config=env_config,
+            device_id=device_id,
+            weight_decay=weight_decay,
+            decay_beta=decay_beta,
+            min_grad_norm=min_grad_norm,
+            min_decay=min_decay,
+            max_decay=max_decay,
+        ))
+
+    # Set max_workers based on devices if not specified
+    if max_workers is None:
+        max_workers = len(device_ids) * num_exp_per_device
 
     results = []
 
-    if max_workers == 1:
+    if max_workers == 1 or len(experiments) == 1:
         # Sequential execution for debugging
         for exp in experiments:
             result = run_experiment(exp)
@@ -316,56 +402,84 @@ def run_parallel_experiments(
                 try:
                     result = future.result()
                     results.append(result)
-                    print(f"Completed: {result['optimizer']} seed={result['seed']}, "
+                    print(f"Completed: {result['env_name']} {result['optimizer']} seed={result['seed']}, "
                           f"final_reward={result['final_reward']:.2f}")
                 except Exception as e:
-                    print(f"Error in {exp.optimizer}, seed={exp.seed}: {e}")
+                    print(f"Error in {exp.env_name} {exp.optimizer}, seed={exp.seed}, device={exp.device_id}: {e}")
 
     return results
 
 
 def print_comparison_summary(results: List[Dict]) -> None:
-    """Print a summary comparing optimizer results."""
-    optimizer_groups = {}
+    """Print a summary comparing optimizer results, grouped by environment."""
+    # Group by environment, then by optimizer
+    env_groups = {}
     for r in results:
+        env = r['env_name']
+        if env not in env_groups:
+            env_groups[env] = {}
         opt = r['optimizer']
-        if opt not in optimizer_groups:
-            optimizer_groups[opt] = []
-        optimizer_groups[opt].append(r)
+        if opt not in env_groups[env]:
+            env_groups[env][opt] = []
+        env_groups[env][opt].append(r)
 
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("EXPERIMENT COMPARISON SUMMARY")
-    print("=" * 60)
+    print("=" * 70)
+
+    opt_display = {
+        'adam': 'Adam',
+        'adams': 'AdamS',
+        'gsd': 'GSD',
+    }
+
+    # Per-environment summary
+    for env_name in sorted(env_groups.keys()):
+        opt_results = env_groups[env_name]
+        print(f"\n{env_name}:")
+
+        env_means = {}
+        for opt_name in sorted(opt_results.keys()):
+            rewards = [r['final_reward'] for r in opt_results[opt_name]]
+            mean_reward = np.mean(rewards)
+            std_reward = np.std(rewards)
+            env_means[opt_name] = mean_reward
+            print(f"  {opt_display.get(opt_name, opt_name):6s}: {mean_reward:8.2f} +/- {std_reward:6.2f}")
+
+        # Show best optimizer for this env
+        if env_means:
+            best_opt = max(env_means, key=env_means.get)
+            print(f"  Best: {opt_display.get(best_opt, best_opt)}")
+
+    # Overall summary across all environments
+    print("\n" + "-" * 70)
+    print("OVERALL (mean across all environments):")
+    optimizer_totals = {}
+    for env_name, opt_results in env_groups.items():
+        for opt_name, results_list in opt_results.items():
+            if opt_name not in optimizer_totals:
+                optimizer_totals[opt_name] = []
+            optimizer_totals[opt_name].extend([r['final_reward'] for r in results_list])
 
     optimizer_means = {}
-
-    for opt_name, opt_results in sorted(optimizer_groups.items()):
-        rewards = [r['final_reward'] for r in opt_results]
+    for opt_name in sorted(optimizer_totals.keys()):
+        rewards = optimizer_totals[opt_name]
         mean_reward = np.mean(rewards)
         std_reward = np.std(rewards)
         optimizer_means[opt_name] = mean_reward
-
-        opt_display = {
-            'adam': 'Adam (baseline)',
-            'adams': 'AdamS (Scheduled Weight Decay - global)',
-            'gsd': 'GSD (Gradient Scaled Decay - per-param)',
-        }.get(opt_name, opt_name)
-
-        print(f"\n{opt_display}:")
-        print(f"  Seeds: {[r['seed'] for r in opt_results]}")
-        print(f"  Final rewards: {rewards}")
-        print(f"  Mean: {mean_reward:.2f} +/- {std_reward:.2f}")
+        print(f"  {opt_display.get(opt_name, opt_name):6s}: {mean_reward:8.2f} +/- {std_reward:6.2f}")
 
     # Print improvements relative to baseline
     if 'adam' in optimizer_means:
         baseline = optimizer_means['adam']
         print(f"\nImprovements vs Adam baseline:")
-        for opt_name, mean in optimizer_means.items():
+        for opt_name, mean in sorted(optimizer_means.items()):
             if opt_name != 'adam':
                 improvement = mean - baseline
-                print(f"  {opt_name}: {improvement:+.2f}")
+                pct = (improvement / abs(baseline)) * 100 if baseline != 0 else 0
+                print(f"  {opt_display.get(opt_name, opt_name):6s}: {improvement:+8.2f} ({pct:+.1f}%)")
 
-    print("=" * 60)
+    print("=" * 70)
 
 
 if __name__ == "__main__":
@@ -388,13 +502,34 @@ if __name__ == "__main__":
         help="Hydra config overrides"
     )
     parser.add_argument(
-        "--seeds", type=int, nargs='+', default=[0, 1, 2],
-        help="Random seeds for experiments"
+        "--env_type", type=str, default="hb_locomotion",
+        choices=['hb_locomotion', 'dmc_hard', 'dmc_em', 'mujoco', 'myosuite', 'd4rl_mujoco', 'all'],
+        help="Environment suite to sweep over (default: hb_locomotion)"
     )
     parser.add_argument(
-        "--optimizer", type=str, nargs='+', default=['adam', 'adams'],
+        "--envs", type=str, nargs='+', default=None,
+        help="Specific environment names to run (overrides --env_type). Uses env_type's config."
+    )
+    parser.add_argument(
+        "--seeds", type=int, nargs='+', default=None,
+        help="Random seeds for experiments (alternative to --num_seeds)"
+    )
+    parser.add_argument(
+        "--num_seeds", type=int, default=None,
+        help="Number of seeds to run (0, 1, 2, ..., num_seeds-1)"
+    )
+    parser.add_argument(
+        "--optimizer", type=str, nargs='+', default=['adam', 'adams', 'gsd'],
         choices=['adam', 'adams', 'gsd'],
-        help="Optimizer(s) to run (default: adam adams)"
+        help="Optimizer(s) to run (default: adam adams gsd)"
+    )
+    parser.add_argument(
+        "--device_ids", type=int, nargs='+', default=[0],
+        help="GPU device IDs to use (default: 0)"
+    )
+    parser.add_argument(
+        "--num_exp_per_device", type=int, default=1,
+        help="Number of experiments to run per device concurrently (default: 1)"
     )
     parser.add_argument(
         "--weight_decay", type=float, default=1e-4,
@@ -428,24 +563,56 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Determine seeds from --seeds or --num_seeds
+    if args.seeds is not None:
+        seeds = args.seeds
+    elif args.num_seeds is not None:
+        seeds = list(range(args.num_seeds))
+    else:
+        seeds = [0, 1, 2]  # default
+
+    # Get environments for the specified env_type
+    environments = get_environments(args.env_type)
+
+    # Filter to specific environments if --envs is provided
+    if args.envs is not None:
+        env_dict = {env_name: env_config for env_name, env_config in environments}
+        filtered = []
+        for env_name in args.envs:
+            if env_name in env_dict:
+                filtered.append((env_name, env_dict[env_name]))
+            else:
+                print(f"Warning: '{env_name}' not found in {args.env_type}, skipping")
+        environments = filtered
+
     max_workers = 1 if args.sequential else args.max_workers
 
+    total_experiments = len(environments) * len(seeds) * len(args.optimizer)
     print(f"Starting parallel optimizer comparison experiments")
+    print(f"  Env type: {args.env_type} ({len(environments)} environments)")
+    print(f"  Environments: {[e[0] for e in environments]}")
     print(f"  Optimizers: {args.optimizer}")
-    print(f"  Seeds: {args.seeds}")
+    print(f"  Seeds: {seeds}")
+    print(f"  Total experiments: {total_experiments}")
+    print(f"  Device IDs: {args.device_ids}")
+    print(f"  Experiments per device: {args.num_exp_per_device}")
     print(f"  Weight decay: {args.weight_decay}")
     if 'gsd' in args.optimizer:
         print(f"  GSD decay_beta: {args.decay_beta}")
         print(f"  GSD min_grad_norm: {args.min_grad_norm}")
         print(f"  GSD min/max_decay: [{args.min_decay}, {args.max_decay}]")
-    print(f"  Max workers: {max_workers or 'auto'}")
+    print(f"  Max workers: {max_workers or len(args.device_ids) * args.num_exp_per_device}")
+    print(f"  Loop order: environment -> seed -> optimizer")
 
     results = run_parallel_experiments(
         config_path=args.config_path,
         config_name=args.config_name,
         overrides=args.overrides,
-        seeds=args.seeds,
+        environments=environments,
+        seeds=seeds,
         optimizers=args.optimizer,
+        device_ids=args.device_ids,
+        num_exp_per_device=args.num_exp_per_device,
         weight_decay=args.weight_decay,
         decay_beta=args.decay_beta,
         min_grad_norm=args.min_grad_norm,
