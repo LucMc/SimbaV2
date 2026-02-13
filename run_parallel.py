@@ -61,7 +61,7 @@ if __name__ == "__main__":
     agent_config = args.pop("agent_config")
 
     # import library after CUDA_VISIBLE_DEVICES operation
-    from scale_rl.envs.d4rl import D4RL_MUJOCO
+    # Lazy imports to avoid mujoco-py dependency when not needed
     from scale_rl.envs.dmc import DMC_EASY_MEDIUM, DMC_HARD
     from scale_rl.envs.humanoid_bench import HB_LOCOMOTION_NOHAND
     from scale_rl.envs.mujoco import MUJOCO_ALL
@@ -72,6 +72,7 @@ if __name__ == "__main__":
     ###################
     # offline
     if env_type == "d4rl_mujoco":
+        from scale_rl.envs.d4rl import D4RL_MUJOCO
         envs = D4RL_MUJOCO
         env_configs = ["d4rl"] * len(envs)
 

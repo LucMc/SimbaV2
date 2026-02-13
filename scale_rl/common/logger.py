@@ -10,11 +10,15 @@ class WandbTrainerLogger(object):
         self.cfg = cfg
         dict_cfg = OmegaConf.to_container(cfg, throw_on_missing=True)
 
+        run_name = f"{cfg.exp_name}_{cfg.env.env_name}_s{cfg.seed}"
+
         wandb.init(
             project=cfg.project_name,
-            entity=cfg.entity_name,
+            entity=cfg.entity_name if cfg.entity_name else None,
             group=cfg.group_name,
+            name=run_name,
             config=dict_cfg,
+            mode=cfg.get("wandb_mode", "offline"),
         )
 
         self.reset()
